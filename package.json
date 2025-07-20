@@ -1,0 +1,30 @@
+{
+  "name": "xrpl-credentials",
+  "version": "1.0.0",
+  "description": "Sample implementation of XRPL Credentials functionality",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "ts-node src/index.ts",
+    "build": "tsc",
+    "format": "biome format --write .",
+    "lint": "biome lint .",
+    "create-accounts": "ts-node src/scripts/createAccounts.ts",
+    "issue-credential": "ts-node src/examples/issue-credential.ts",
+    "view-credential": "ts-node src/examples/view-credential.ts",
+    "accept-credential": "ts-node src/examples/accept-credential.ts",
+    "revoke-credential": "ts-node src/examples/revoke-credential.ts",
+    "credential-preauth": "ts-node src/examples/credential-preauth.ts",
+    "transfer-to-verity": "ts-node src/examples/transfer-to-verity.ts",
+    "transfer-to-issuer": "ts-node src/examples/transfer-to-issuer.ts"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.0",
+    "xrpl": "^4.3.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.1.2",
+    "@types/node": "^24.0.15",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  }
+}
