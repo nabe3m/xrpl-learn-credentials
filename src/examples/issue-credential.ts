@@ -1,8 +1,33 @@
-import { Client, Wallet } from "xrpl";
+import {
+  Client,
+  Wallet,
+  type SubmittableTransaction,
+  type Transaction,
+  type TransactionMetadata,
+  isoTimeToRippleTime,
+  convertStringToHex as stringToHex,
+  convertHexToString as hexToString,
+} from "xrpl";
 import dotenv from "dotenv";
-import { CredentialService } from "../services/credentialService";
 import * as fs from "node:fs";
 import * as path from "node:path";
+
+// CredentialCreate transaction type definition
+interface CredentialCreateTransaction extends Omit<Transaction, "TransactionType"> {
+  TransactionType: "CredentialCreate";
+  Account: string;
+  Subject: string;
+  CredentialType: string;
+  Expiration?: number;
+  URI?: string;
+  Memos?: Array<{
+    Memo: {
+      MemoData?: string;
+      MemoType?: string;
+      MemoFormat?: string;
+    };
+  }>;
+}
 
 // Load environment variables
 dotenv.config();
@@ -28,34 +53,28 @@ if (!ALICE_ADDRESS || !ALICE_SEED) {
  * XRPL Community Exam Scenario
  *
  * 1. Certification authority issues XRPL Community Exam as a Credential
- * 2. Alice receives the credential
- * 3. Display Alice's credential information
+ * 2. Save the Credential ID to environment variables
  */
-async function runXRPLCommunityExamScenario() {
-  // Initialize client
+async function runIssueCredentialScenario() {
   const client = new Client(XRPL_NETWORK);
-  await client.connect();
 
   try {
     console.log("Connected to XRPL network");
+    await client.connect();
 
-    // Certification authority wallet (issuer)
+    // Create wallets
     if (!XRPL_ACCOUNT_SECRET) {
-      throw new Error("Issuer account secret is not set");
+      throw new Error("Issuer secret is not set");
     }
-
     const issuerWallet = Wallet.fromSeed(XRPL_ACCOUNT_SECRET);
-    console.log(`Certification authority address: ${issuerWallet.address}`);
 
-    // Alice's wallet
     if (!ALICE_SEED) {
-      throw new Error("Alice's seed is not set");
+      throw new Error("Alice seed is not set");
     }
     const aliceWallet = Wallet.fromSeed(ALICE_SEED);
-    console.log(`Alice's address: ${aliceWallet.address}`);
 
-    // Credential service
-    const credentialService = new CredentialService(client, issuerWallet);
+    console.log(`Issuer address: ${issuerWallet.address}`);
+    console.log(`Alice address: ${aliceWallet.address}`);
 
     // Step 1: Issue XRPL Community Exam certification
     console.log("\n1. Issuing XRPL Community Exam certification...");
@@ -63,85 +82,164 @@ async function runXRPLCommunityExamScenario() {
     const expirationDate = new Date();
     expirationDate.setFullYear(expirationDate.getFullYear() + 1); // Valid for 1 year
 
-    const credentialRequest = {
-      subject: aliceWallet.address,
-      credential: "XRPLCommunityExamCertification",
-      expiration: expirationDate.toISOString(),
-      uri: "https://example.com/xrpl-certification",
-      memo: {
-        type: "Certification",
-        format: "text/plain",
-        data: JSON.stringify({
-          examId: "XRPL-EXAM-2024-001",
-          score: 95,
-          passingScore: 80,
-          examDate: new Date().toISOString(),
-          institution: "XRPL Community",
-          certificateLevel: "Advanced",
-        }),
-      },
+    // Prepare CredentialCreate transaction
+    const tx: CredentialCreateTransaction = {
+      TransactionType: "CredentialCreate",
+      Account: issuerWallet.address,
+      Subject: aliceWallet.address,
+      CredentialType: stringToHex("XRPLCommunityExamCertification"),
+      Expiration: isoTimeToRippleTime(expirationDate.toISOString()),
+      URI: stringToHex("https://example.com/xrpl-certification"),
     };
 
-    const credentialId = await credentialService.issueCredential(credentialRequest);
-    console.log(`Credential issued: ${credentialId}`);
+    // Add memo
+    const memos = [
+      {
+        Memo: {
+          MemoData: stringToHex(
+            JSON.stringify({
+              certificateId: "XRPL-2025-001",
+              examDate: new Date().toISOString().split("T")[0],
+              score: "95/100",
+              issuer: "XRPL Community",
+              level: "Advanced",
+            }),
+          ),
+          MemoType: stringToHex("Certification"),
+          MemoFormat: stringToHex("text/plain"),
+        },
+      },
+    ];
+    tx.Memos = memos;
 
-    // Update .env file with Credential ID
-    updateEnvWithCredentialId(credentialId);
+    // Send transaction
+    console.log("Preparing and sending CredentialCreate transaction...");
+    const prepared = await client.autofill(tx as unknown as SubmittableTransaction);
+    const signed = issuerWallet.sign(prepared);
+    const result = await client.submitAndWait(signed.tx_blob);
 
-    // Step 2: Display Alice's credential information
-    console.log("\n2. Displaying Alice's credential information...");
-    const credentials = await credentialService.getCredentials(aliceWallet.address);
+    // Check the result
+    if (result.result.meta && typeof result.result.meta === "object") {
+      const meta = result.result.meta as TransactionMetadata;
+      if (meta.TransactionResult === "tesSUCCESS") {
+        console.log("✅ Credential issuance successful!");
+        console.log(`Transaction hash: ${result.result.hash}`);
 
-    if (credentials.length > 0) {
-      console.log("Credentials found:");
-      for (const cred of credentials) {
-        console.log(`- Credential Type: ${cred.credential}`);
-        console.log(`  Subject: ${cred.subject}`);
-        console.log(`  Expiration: ${cred.expiration || "None"}`);
-        console.log(`  URI: ${cred.uri || "None"}`);
-        if (cred.memo) {
-          console.log(`  Memo: ${JSON.stringify(cred.memo, null, 2)}`);
+        // Find the Credential ID
+        let credentialId: string | undefined;
+        if (meta.AffectedNodes && Array.isArray(meta.AffectedNodes)) {
+          const credentialNode = meta.AffectedNodes.find((node) => {
+            const nodeWithCreated = node as {
+              CreatedNode?: { LedgerEntryType?: string; LedgerIndex?: string };
+            };
+            return (
+              nodeWithCreated.CreatedNode &&
+              nodeWithCreated.CreatedNode.LedgerEntryType === "Credential"
+            );
+          });
+
+          if (credentialNode) {
+            const nodeWithCreated = credentialNode as {
+              CreatedNode?: { LedgerEntryType?: string; LedgerIndex?: string };
+            };
+            if (nodeWithCreated.CreatedNode?.LedgerIndex) {
+              credentialId = nodeWithCreated.CreatedNode.LedgerIndex;
+              console.log(`Issued Credential ID: ${credentialId}`);
+            }
+          }
         }
+
+        // Save credential ID to .env file
+        if (credentialId) {
+          console.log("\n2. Saving Credential ID to .env file...");
+          const envPath = path.join(process.cwd(), ".env");
+          let envContent = fs.readFileSync(envPath, "utf-8");
+
+          // Update or add CREDENTIAL_ID
+          if (envContent.includes("CREDENTIAL_ID=")) {
+            envContent = envContent.replace(/CREDENTIAL_ID=.*/, `CREDENTIAL_ID=${credentialId}`);
+          } else {
+            envContent += `\nCREDENTIAL_ID=${credentialId}`;
+          }
+
+          fs.writeFileSync(envPath, envContent);
+          console.log(`✅ Credential ID saved to .env: ${credentialId}`);
+        }
+
+        // Step 3: Verify issued credential
+        console.log("\n3. Verifying issued credential...");
+        const ledgerRequest = await client.request({
+          command: "account_objects",
+          account: aliceWallet.address,
+          type: "credential",
+        });
+
+        if (
+          ledgerRequest.result.account_objects &&
+          ledgerRequest.result.account_objects.length > 0
+        ) {
+          const credentials = ledgerRequest.result.account_objects.filter(
+            (obj: unknown) =>
+              (obj as { LedgerEntryType?: string }).LedgerEntryType === "Credential",
+          );
+
+          console.log(`Found ${credentials.length} credential(s) for Alice:`);
+          for (const cred of credentials) {
+            const credObj = cred as {
+              Subject: string;
+              CredentialType: string;
+              Flags: number;
+              Expiration?: number;
+              URI?: string;
+              Memos?: Array<{
+                Memo: {
+                  MemoData?: string;
+                  MemoType?: string;
+                  MemoFormat?: string;
+                };
+              }>;
+            };
+            console.log(`- Subject: ${credObj.Subject}`);
+            console.log(`- Credential Type: ${hexToString(credObj.CredentialType)}`);
+            console.log(`- Accepted: ${(credObj.Flags & 0x00010000) !== 0 ? "Yes" : "No"}`);
+            if (credObj.Expiration) {
+              const expiration = new Date((credObj.Expiration + 946684800) * 1000);
+              console.log(`- Expiration: ${expiration.toISOString()}`);
+            }
+            if (credObj.URI) {
+              console.log(`- URI: ${hexToString(credObj.URI)}`);
+            }
+
+            // Display memo information
+            if (credObj.Memos && credObj.Memos.length > 0) {
+              const memo = credObj.Memos[0].Memo;
+              console.log("- Memo:");
+              if (memo.MemoData) {
+                const memoData = JSON.parse(hexToString(memo.MemoData));
+                console.log(`  Certificate ID: ${memoData.certificateId}`);
+                console.log(`  Exam Date: ${memoData.examDate}`);
+                console.log(`  Score: ${memoData.score}`);
+                console.log(`  Level: ${memoData.level}`);
+              }
+            }
+            console.log("");
+          }
+        }
+      } else {
+        const errorCode = meta.TransactionResult || "Unknown error";
+        throw new Error(`Transaction failed: ${errorCode}`);
       }
     } else {
-      console.log("No credentials found for Alice");
+      throw new Error("Transaction result is unknown");
     }
-
-    console.log("\n✅ XRPL Community Exam certification scenario completed successfully!");
   } catch (error) {
-    console.error("An error occurred:", error);
+    console.error("Error occurred:", error);
+    throw error;
   } finally {
     await client.disconnect();
+    console.log("Disconnected from XRPL network");
   }
 }
 
-/**
- * Update .env file with Credential ID
- */
-function updateEnvWithCredentialId(credentialId: string) {
-  try {
-    const envPath = path.resolve(process.cwd(), ".env");
-
-    if (fs.existsSync(envPath)) {
-      let content = fs.readFileSync(envPath, "utf8");
-
-      // Update CREDENTIAL_ID value
-      const regex = /^CREDENTIAL_ID=.*$/m;
-      if (regex.test(content)) {
-        content = content.replace(regex, `CREDENTIAL_ID="${credentialId}"`);
-      } else {
-        // Add CREDENTIAL_ID if it doesn't exist
-        content += `\nCREDENTIAL_ID="${credentialId}"`;
-      }
-
-      fs.writeFileSync(envPath, content, "utf8");
-      console.log(`Credential ID saved to .env file: ${credentialId}`);
-    } else {
-      console.warn(".env file not found, could not save Credential ID");
-    }
-  } catch (error) {
-    console.error("Error updating .env file:", error);
-  }
-}
-
-runXRPLCommunityExamScenario();
+// Execute the scenario
+runIssueCredentialScenario().catch(console.error);

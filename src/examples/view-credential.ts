@@ -1,6 +1,5 @@
-import { Client, Wallet } from "xrpl";
+import { Client, Wallet, rippleTimeToISOTime, convertHexToString as hexToString } from "xrpl";
 import dotenv from "dotenv";
-import { CredentialService } from "../services/credentialService";
 
 // Load environment variables
 dotenv.config();
@@ -18,54 +17,109 @@ if (!XRPL_NETWORK || !XRPL_ACCOUNT_ADDRESS || !XRPL_ACCOUNT_SECRET) {
  * Credential viewing scenario
  *
  * 1. Display credentials issued by the issuer
- * 2. Display detailed information for each credential
+ * 2. Show detailed information for each credential
  */
 async function runViewCredentialScenario() {
-  // Initialize client
   const client = new Client(XRPL_NETWORK);
-  await client.connect();
 
   try {
     console.log("Connected to XRPL network");
+    await client.connect();
 
-    // Issuer wallet
+    // Create issuer wallet
     if (!XRPL_ACCOUNT_SECRET) {
-      throw new Error("Issuer account secret is not set");
+      throw new Error("Issuer secret is not set");
     }
     const issuerWallet = Wallet.fromSeed(XRPL_ACCOUNT_SECRET);
     console.log(`Issuer address: ${issuerWallet.address}`);
 
-    // Credential service
-    const credentialService = new CredentialService(client, issuerWallet);
+    // Step 1: Get all credentials on the ledger
+    console.log("\n1. Retrieving all credentials...");
 
-    // Step 1: View all issued credentials
-    console.log("\n1. Viewing all issued credentials...");
-    const credentials = await credentialService.getCredentials();
+    // Get account objects for the issuer (credentials they issued)
+    const issuerRequest = await client.request({
+      command: "account_objects",
+      account: issuerWallet.address,
+      type: "credential",
+    });
 
-    if (credentials.length > 0) {
-      console.log(`Found ${credentials.length} credential(s):`);
+    const allCredentials: unknown[] = [];
 
-      for (let i = 0; i < credentials.length; i++) {
-        const cred = credentials[i];
-        console.log(`\n--- Credential ${i + 1} ---`);
-        console.log(`Credential Type: ${cred.credential}`);
-        console.log(`Subject: ${cred.subject}`);
-        console.log(`Expiration: ${cred.expiration || "None"}`);
-        console.log(`URI: ${cred.uri || "None"}`);
+    if (issuerRequest.result.account_objects && issuerRequest.result.account_objects.length > 0) {
+      const issuerCredentials = issuerRequest.result.account_objects.filter(
+        (obj: unknown) => (obj as { LedgerEntryType?: string }).LedgerEntryType === "Credential",
+      );
+      allCredentials.push(...issuerCredentials);
+    }
 
-        if (cred.memo) {
-          console.log("Memo Information:");
-          console.log(`  Type: ${cred.memo.type || "Not specified"}`);
-          console.log(`  Format: ${cred.memo.format || "Not specified"}`);
-          if (cred.memo.data) {
+    // Note: We primarily rely on account_objects for credential lookup
+    // as it provides the most reliable way to get credentials for a specific account
+
+    // Step 2: Display credentials
+    if (allCredentials.length > 0) {
+      console.log(`\nFound ${allCredentials.length} credential(s):`);
+      console.log("=".repeat(60));
+
+      for (let i = 0; i < allCredentials.length; i++) {
+        const cred = allCredentials[i] as {
+          LedgerIndex?: string;
+          Account: string;
+          Subject: string;
+          CredentialType: string;
+          Flags: number;
+          Expiration?: number;
+          URI?: string;
+          Memos?: Array<{
+            Memo: {
+              MemoData?: string;
+              MemoType?: string;
+              MemoFormat?: string;
+            };
+          }>;
+        };
+        console.log(`\nCredential ${i + 1}:`);
+        console.log(`- Ledger Index: ${cred.LedgerIndex || "Unknown"}`);
+        console.log(`- Account (Issuer): ${cred.Account}`);
+        console.log(`- Subject: ${cred.Subject}`);
+        console.log(`- Credential Type: ${hexToString(cred.CredentialType)}`);
+        console.log(`- Accepted: ${(cred.Flags & 0x00010000) !== 0 ? "Yes" : "No"}`);
+
+        if (cred.Expiration) {
+          const expiration = rippleTimeToISOTime(cred.Expiration);
+          console.log(`- Expiration: ${expiration}`);
+        } else {
+          console.log("- Expiration: No expiration set");
+        }
+
+        if (cred.URI) {
+          console.log(`- URI: ${hexToString(cred.URI)}`);
+        }
+
+        // Display memo information
+        if (cred.Memos && cred.Memos.length > 0) {
+          console.log("- Memo Information:");
+          const memo = cred.Memos[0].Memo;
+
+          if (memo.MemoType) {
+            console.log(`  Type: ${hexToString(memo.MemoType)}`);
+          }
+          if (memo.MemoFormat) {
+            console.log(`  Format: ${hexToString(memo.MemoFormat)}`);
+          }
+          if (memo.MemoData) {
             try {
-              const parsedData = JSON.parse(cred.memo.data);
-              console.log("  Data:", JSON.stringify(parsedData, null, 4));
-            } catch {
-              console.log(`  Data: ${cred.memo.data}`);
+              const memoData = JSON.parse(hexToString(memo.MemoData));
+              console.log("  Data:");
+              Object.entries(memoData).forEach(([key, value]) => {
+                console.log(`    ${key}: ${value}`);
+              });
+            } catch (_e) {
+              console.log(`  Data: ${hexToString(memo.MemoData)}`);
             }
           }
         }
+
+        console.log("-".repeat(40));
       }
     } else {
       console.log("No credentials found");
@@ -73,10 +127,13 @@ async function runViewCredentialScenario() {
 
     console.log("\n✅ Credential viewing completed successfully!");
   } catch (error) {
-    console.error("❌ An error occurred:", error);
+    console.error("Error occurred:", error);
+    throw error;
   } finally {
     await client.disconnect();
+    console.log("Disconnected from XRPL network");
   }
 }
 
-runViewCredentialScenario();
+// Execute the scenario
+runViewCredentialScenario().catch(console.error);

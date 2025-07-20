@@ -1,4 +1,4 @@
-import { Client, Wallet, type Payment, type TransactionMetadata } from "xrpl";
+import { Client, Wallet, xrpToDrops, type Payment, type TransactionMetadata } from "xrpl";
 import dotenv from "dotenv";
 import { getUserConfirmation } from "../utils/inputUtils";
 
@@ -57,7 +57,7 @@ async function sendXRP(
       TransactionType: "Payment",
       Account: sender.address,
       Destination: destination,
-      Amount: (Number.parseFloat(amount) * 1000000).toString(), // XRP is converted to drops (1 XRP = 1,000,000 drops)
+      Amount: xrpToDrops(amount).toString(), // XRP is converted to drops (1 XRP = 1,000,000 drops)
     };
 
     // If credential IDs are provided, add them to the transaction
@@ -134,7 +134,7 @@ async function testTransfersToIssuer() {
     console.log(`Bob (Sender, No Credentials): ${bobWallet.address}`);
 
     // Transfer amount (XRP)
-    const transferAmount = "1.0"; // 1 XRP
+    const transferAmount = "1"; // 1 XRP
 
     // Test execution confirmation
     const confirmed = await getUserConfirmation(
