@@ -1,12 +1,12 @@
 /**
- * ユーザー入力処理用ユーティリティ
+ * User input processing utilities
  */
 import readline from "node:readline";
 
 /**
- * ユーザーに確認を求め、Yes/Noの回答を受け取る
- * @param question 質問文
- * @returns Yesの場合true、Noの場合false
+ * Prompt user for confirmation and receive Yes/No response
+ * @param question Question text
+ * @returns true if Yes, false if No
  */
 export function getUserConfirmation(question: string): Promise<boolean> {
   const rl = readline.createInterface({
